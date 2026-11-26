@@ -128,10 +128,13 @@ int32_t depth_get_pressure_pa(void) { return s_pressure_pa; }
 
 int32_t depth_get_depth_mm(void)
 {
+    if (!s_ok) {
+        return 0;
+    }
     int32_t diff = s_pressure_pa - s_ref_pa;
     /* depth_mm = diff(Pa) / (1000 kg/m^3 * 9.81 m/s^2) * 1000 mm/m
      *         = diff * 1000 / 9810 */
-    return (int32_t)((diff * 1000) / 9810);
+    return (int32_t)(((int64_t)diff * 1000) / 9810);
 }
 
 int16_t depth_get_temp_c100(void) { return s_temp_c100; }

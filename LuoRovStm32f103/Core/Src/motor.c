@@ -18,6 +18,11 @@
 /* TIM3/TIM4 属于 APB1；USART2 也在此使能，避免重复处理见 rs485.c */
 static void motor_gpio_init(void)
 {
+    /* 先使能 AFIO、GPIOA、GPIOB 时钟，避免在 rs485_init() 之前写 GPIO 寄存器被忽略 */
+    RCC->APB2ENR |= (1UL << 0)   /* AFIO  */
+                 |  (1UL << 2)   /* GPIOA */
+                 |  (1UL << 3);  /* GPIOB */
+
     /* PA6,PA7,PB0,PB1,PB6,PB7,PB8,PB9 配置为复用推挽输出 (AF push-pull, 50MHz)
      * CNF=10, MODE=11 => 4bit 字段 = 0b1011 = 0xB */
     gpio_cfg(ESC1_GPIO, ESC1_PIN, GPIO_CFG_AF_PP, GPIO_CFG_SPEED_50M);

@@ -23,6 +23,7 @@ extern "C" {
 #include "depth.h"
 #include "rs485.h"
 #include "protocol.h"
+#include "control.h"
 
 void SystemClock_Config(void);
 void Error_Handler(void);

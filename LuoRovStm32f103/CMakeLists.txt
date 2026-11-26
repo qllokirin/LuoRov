@@ -50,6 +50,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/depth.c
     Core/Src/rs485.c
     Core/Src/protocol.c
+    Core/Src/control.c
 )
 
 # Add include paths

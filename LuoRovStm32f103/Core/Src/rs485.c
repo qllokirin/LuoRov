@@ -34,7 +34,7 @@ static void ring_init(ring_t *r, uint16_t size)
 
 static uint16_t ring_avail(const ring_t *r)
 {
-    return (uint16_t)((r->head - r->tail) % r->size);
+    return (uint16_t)((r->head + r->size - r->tail) % r->size);
 }
 
 static uint8_t ring_push(ring_t *r, uint8_t b)
@@ -80,11 +80,13 @@ static void rs485_gpio_init(void)
                  |  (1UL << 14); /* USART1 */
     RCC->APB1ENR |= (1UL << 17); /* USART2 */
 
-    /* 岸站: PA9=TX(AF PP), PA10=RX(浮空输入), PA8=DE(推挽输出) */
+    /* 岸站: PA9=TX(AF PP), PA10=RX(浮空输入); RS485 模式额外配置 PA8=DE */
     gpio_cfg(SHORE_TX_GPIO, SHORE_TX_PIN, GPIO_CFG_AF_PP, GPIO_CFG_SPEED_50M);
     gpio_cfg(SHORE_RX_GPIO, SHORE_RX_PIN, GPIO_CFG_IN_FLOAT, GPIO_CFG_MODE_IN);
+#if SHORE_USE_RS485
     gpio_cfg(SHORE_DE_GPIO, SHORE_DE_PIN, GPIO_CFG_OUT_PP, GPIO_CFG_SPEED_50M);
     gpio_clr(SHORE_DE_GPIO, SHORE_DE_PIN);   /* 默认接收 */
+#endif
 
     /* 深度计: PA2=TX, PA3=RX, PA1=DE */
     gpio_cfg(DEPTH_TX_GPIO, DEPTH_TX_PIN, GPIO_CFG_AF_PP, GPIO_CFG_SPEED_50M);
@@ -115,18 +117,26 @@ static void usart_send(USART_TypeDef *u, GPIO_TypeDef *de_port, uint32_t de_pin,
                        const uint8_t *buf, uint16_t len)
 {
     uint16_t i;
-    gpio_set(de_port, de_pin);                       /* 进入发送方向 */
+    if (de_port != (GPIO_TypeDef *)0) {
+        gpio_set(de_port, de_pin);                   /* 进入发送方向 */
+    }
     for (i = 0; i < len; i++) {
         while (!(u->SR & USART_SR_TXE)) { }          /* 等待发送数据寄存器空 */
         u->DR = buf[i];
     }
     while (!(u->SR & USART_SR_TC)) { }               /* 等待移位寄存器发送完 */
-    gpio_clr(de_port, de_pin);                       /* 恢复接收方向 */
+    if (de_port != (GPIO_TypeDef *)0) {
+        gpio_clr(de_port, de_pin);                   /* 恢复接收方向 */
+    }
 }
 
 void rs485_shore_send(const uint8_t *buf, uint16_t len)
 {
+#if SHORE_USE_RS485
     usart_send(SHORE_UART, SHORE_DE_GPIO, SHORE_DE_PIN, buf, len);
+#else
+    usart_send(SHORE_UART, (GPIO_TypeDef *)0, 0, buf, len);
+#endif
 }
 
 void rs485_depth_send(const uint8_t *buf, uint16_t len)

@@ -34,22 +34,38 @@ typedef struct {
 } imu_data_t;
 
 /**
-  * @brief 初始化软件 I2C 引脚并配置 MPU6050。
+  * @brief 初始化软件 I2C 引脚、配置 MPU6050 并执行启动陀螺仪零偏校准。
   * @retval 0 成功(WHO_AM_I 校验通过)，非 0 失败
   */
 int32_t imu_init(void);
 
 /**
-  * @brief 读取并解算姿态。调用前请先 imu_init()。
-  * @param out 输出结构体
+  * @brief 周期采样并执行互补滤波姿态解算 (建议 200Hz 调用)。
+  * @param out 输出结构体 (可传 NULL，仅更新内部缓存)
   * @retval 0 成功，非 0 读取失败
   */
 int32_t imu_read(imu_data_t *out);
 
 /**
+  * @brief 获取最近一次解算的姿态缓存 (无 I2C 阻塞开销，供遥测与控制环读取)。
+  */
+void imu_get_latest(imu_data_t *out);
+
+/**
+  * @brief 重新校准陀螺仪零偏，并将当前静止姿态设为水平零点 (Roll=0, Pitch=0, Yaw=0)。
+  * @retval 0 成功，非 0 失败
+  */
+int32_t imu_calibrate_level(void);
+
+/**
   * @brief 是否已成功初始化并读到有效数据。
   */
 uint8_t imu_ok(void);
+
+/**
+  * @brief 陀螺仪零偏是否已完成校准。
+  */
+uint8_t imu_is_calibrated(void);
 
 #ifdef __cplusplus
 }

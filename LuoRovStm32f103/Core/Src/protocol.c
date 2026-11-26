@@ -36,20 +36,23 @@ static void frame_append_crc(uint8_t *buf, uint16_t crc_start, uint16_t crc_len)
     buf[crc_start + crc_len + 1] = (uint8_t)((crc >> 8) & 0xFF);
 }
 
-uint16_t proto_build_status(uint8_t *buf, const telemetry_t *t)
+uint16_t proto_build_frame(uint8_t *buf, uint8_t type, const uint8_t *payload, uint8_t payload_len)
 {
-    const uint8_t *src = (const uint8_t *)t;
     uint16_t i;
-
     buf[0] = PROTO_SYNC1;
     buf[1] = PROTO_SYNC2;
-    buf[2] = (uint8_t)sizeof(telemetry_t);
-    buf[3] = TELE_STATUS;
-    for (i = 0; i < sizeof(telemetry_t); i++) {
-        buf[4 + i] = src[i];
+    buf[2] = payload_len;
+    buf[3] = type;
+    for (i = 0; i < payload_len; i++) {
+        buf[4 + i] = payload[i];
     }
-    frame_append_crc(buf, 2, (uint16_t)(2 + sizeof(telemetry_t)));
-    return (uint16_t)(6 + sizeof(telemetry_t));
+    frame_append_crc(buf, 2, (uint16_t)(2 + payload_len));
+    return (uint16_t)(6 + payload_len);
+}
+
+uint16_t proto_build_status(uint8_t *buf, const telemetry_t *t)
+{
+    return proto_build_frame(buf, TELE_STATUS, (const uint8_t *)t, (uint8_t)sizeof(telemetry_t));
 }
 
 uint16_t proto_build_ack(uint8_t *buf, uint8_t echo_type, uint8_t result)

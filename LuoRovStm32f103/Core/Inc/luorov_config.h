@@ -61,16 +61,18 @@ extern "C" {
 #define ESC8_GPIO            GPIOB
 #define ESC8_PIN             (1UL<<9)     /* PB9  TIM4_CH4 */
 
-/* ============================ 岸站 RS485 (USART1) ============================ */
+/* ============================ 岸站通信 (USART1) ============================ */
+/* 0 = TTL 串口直连 (无需 485 收发器与 DE 方向脚); 1 = RS485 半双工 (PA8 控制 DE/RE) */
+#define SHORE_USE_RS485      0
 #define SHORE_UART           USART1
 #define SHORE_BAUDRATE       115200UL
 #define SHORE_DE_GPIO        GPIOA
-#define SHORE_DE_PIN         (1UL<<8)     /* PA8  485 方向: 高=发送 */
+#define SHORE_DE_PIN         (1UL<<8)     /* PA8  485 方向: 高=发送 (SHORE_USE_RS485=1 时使用) */
 #define SHORE_TX_GPIO        GPIOA
 #define SHORE_TX_PIN         (1UL<<9)     /* PA9  USART1_TX */
 #define SHORE_RX_GPIO        GPIOA
 #define SHORE_RX_PIN         (1UL<<10)    /* PA10 USART1_RX */
-#define SHORE_RX_BUF_SIZE    128
+#define SHORE_RX_BUF_SIZE    256
 
 /* ============================ 深度计 RS485 (USART2) ============================ */
 #define DEPTH_UART           USART2
@@ -114,8 +116,10 @@ extern "C" {
 #define GRAVITY_M_S2           9.81f
 
 /* ============================ 控制与安全 ============================ */
+#define CTRL_LOOP_MS           5           /* 200Hz 姿态解算与控制混控周期 */
 #define CMD_TIMEOUT_MS         500         /* 超时未收到有效指令 -> 停桨+失锁 */
 #define LED_BLINK_MS           500
+#define FLASH_PARAM_ADDR       0x0800FC00UL /* STM32F103C8 末页 1KB 存放 PID/混控参数 */
 
 #ifdef __cplusplus
 }
