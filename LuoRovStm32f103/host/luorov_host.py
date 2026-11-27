@@ -4,11 +4,13 @@
 LuoRov 八推进器 ROV 地面站上位机 (PySide6 · Flutter Material 3 风格)
 
 完整功能:
-  1. 双工作台架构:
+  1. 三工作台架构:
      - 「🎮 遥控驾驶舱」: 5 种运动模式 (纯手动 / 姿态自稳 / 定深遥控 / 定航自稳 / 全闭环悬停)、
        手柄+键盘(WASD/QE/Space/C) 实时 25Hz 操控、单电机直通点动调试、人工地平仪、FinsROV 推进器拓扑图
      - 「🎛️ PID 与混控调参」: 实时双轨迹示波器 (目标 vs 实际 + PID输出 + 阶跃测试)、
        7 路串级 PID 参数读写、FinsROV V33 / LuoRov 8推进器分配映射与正反桨切换、STM32 Flash 掉电固化
+     - 「⚡ 电机测试」: 电机选择、-100.0%~+100.0% 百分比精确输出(含实测 ±10.5% 死区记录)、
+       百分比-推力(g)实时曲线绘图与 CSV 导入导出
   2. 自定义矢量 ROV 应用图标 + 无边框圆角 AppBar + 「深海蓝 / 翡翠绿」双主题实时切换
 
 依赖: pyserial, PySide6, pygame (可选，用于手柄)
@@ -49,6 +51,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -60,6 +63,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from luorov_motor_test import MotorTestPage
 
 # 手柄读取 (pygame 惰性导入: 未安装时不崩溃，不影响串口与键盘操控)
 try:
@@ -515,6 +520,95 @@ def build_qss(t: dict) -> str:
         font-size: 11px;
         padding: 6px;
     }}
+
+    QCheckBox {{
+        color: {t['text_secondary']};
+        spacing: 6px;
+        font-size: 11px;
+        font-weight: 600;
+    }}
+    QCheckBox::indicator {{
+        width: 15px;
+        height: 15px;
+        border-radius: 4px;
+        border: 1px solid {t['outline']};
+        background-color: {t['surface_inset']};
+    }}
+    QCheckBox::indicator:checked {{
+        background-color: {t['primary']};
+        border-color: {t['primary']};
+    }}
+
+    QPushButton.MotorSelBtn {{
+        background-color: {t['surface_inset']};
+        color: {t['text_secondary']};
+        border: 1px solid {t['outline']};
+        border-radius: 11px;
+        padding: 4px 6px;
+        font-family: "Cascadia Code", "Microsoft YaHei UI", sans-serif;
+        font-size: 11px;
+        font-weight: 700;
+    }}
+    QPushButton.MotorSelBtn:hover {{
+        border-color: {t['primary']};
+        color: {t['text_primary']};
+    }}
+    QPushButton.MotorSelBtn[selected="true"] {{
+        background-color: {t['primary_container']};
+        border: 1.5px solid {t['primary']};
+        color: {t['primary']};
+    }}
+
+    QPushButton.SmallPillBtn {{
+        background-color: {t['surface_inset']};
+        color: {t['text_secondary']};
+        border: 1px solid {t['outline']};
+        border-radius: 8px;
+        padding: 2px 4px;
+        font-family: "Cascadia Code", "Microsoft YaHei UI", sans-serif;
+        font-size: 10px;
+        font-weight: 700;
+    }}
+    QPushButton.SmallPillBtn:hover {{
+        background-color: {t['primary_container']};
+        border-color: {t['primary']};
+        color: {t['text_primary']};
+    }}
+
+    QTableWidget {{
+        background-color: {t['surface_inset']};
+        color: {t['text_primary']};
+        border: 1px solid {t['outline_soft']};
+        border-radius: 10px;
+        gridline-color: {t['outline_soft']};
+        font-family: "Cascadia Code", "Consolas", monospace;
+        font-size: 11px;
+        selection-background-color: {t['primary_container']};
+        selection-color: {t['text_primary']};
+    }}
+    QHeaderView::section {{
+        background-color: {t['surface_high']};
+        color: {t['text_secondary']};
+        border: none;
+        border-bottom: 1px solid {t['outline']};
+        padding: 5px 4px;
+        font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
+        font-size: 11px;
+        font-weight: 700;
+    }}
+    QScrollBar:vertical {{
+        background: {t['surface_inset']};
+        width: 8px;
+        border-radius: 4px;
+    }}
+    QScrollBar::handle:vertical {{
+        background: {t['outline']};
+        min-height: 24px;
+        border-radius: 4px;
+    }}
+    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+        height: 0px;
+    }}
     """
 
 
@@ -583,7 +677,7 @@ class StatusChip(QLabel):
         bd = f"rgba({c.red()}, {c.green()}, {c.blue()}, 115)"
         self.setStyleSheet(
             f"background-color: {bg}; color: {color}; border: 1px solid {bd};"
-            "border-radius: 12px; padding: 3px 9px; font-size: 11px; font-weight: 700;"
+            "border-radius: 11px; padding: 3px 7px; font-size: 11px; font-weight: 700;"
         )
 
 
@@ -1350,6 +1444,13 @@ class LuoRovWindow(QMainWindow):
         self.pages = QStackedWidget()
         self.pages.addWidget(self._build_cockpit_page())
         self.pages.addWidget(self._build_tuning_page())
+        self.motor_test_page = MotorTestPage(self.theme)
+        self.motor_test_page.motorCommandRequested.connect(self._on_motor_test_cmd)
+        self.motor_test_page.allMotorsZeroRequested.connect(self._on_motor_test_all_zero)
+        self.motor_test_page.armToggleRequested.connect(self._toggle_arm)
+        self.motor_test_page.estopRequested.connect(self._stop)
+        self.motor_test_page.logMessage.connect(self._log)
+        self.pages.addWidget(self.motor_test_page)
         root.addWidget(self.pages, 1)
 
         foot = QHBoxLayout()
@@ -1368,8 +1469,8 @@ class LuoRovWindow(QMainWindow):
     def _build_appbar(self) -> QFrame:
         bar = DraggableAppBar(self)
         lay = QHBoxLayout(bar)
-        lay.setContentsMargins(14, 8, 10, 8)
-        lay.setSpacing(8)
+        lay.setContentsMargins(12, 8, 10, 8)
+        lay.setSpacing(6)
 
         self.logo_lbl = QLabel()
         self.logo_lbl.setFixedSize(34, 34)
@@ -1383,7 +1484,7 @@ class LuoRovWindow(QMainWindow):
         brand_box.addWidget(self.brand_sub)
         lay.addLayout(brand_box)
 
-        # 页面导航分段胶囊 (驾驶舱 vs 调参工作台)
+        # 页面导航分段胶囊 (驾驶舱 / 调参台 / 电机测试)
         nav_seg = QFrame()
         nav_seg.setProperty("class", "SegmentBox")
         nav_lay = QHBoxLayout(nav_seg)
@@ -1393,19 +1494,24 @@ class LuoRovWindow(QMainWindow):
         self.nav_cockpit_btn = QPushButton("🎮 驾驶舱")
         self.nav_cockpit_btn.setProperty("class", "SegBtn")
         self.nav_cockpit_btn.setProperty("active", "true")
-        self.nav_cockpit_btn.setMinimumWidth(76)
         self.nav_cockpit_btn.setCursor(Qt.PointingHandCursor)
         self.nav_cockpit_btn.clicked.connect(lambda: self._switch_page(0))
 
         self.nav_tune_btn = QPushButton("🎛️ 调参台")
         self.nav_tune_btn.setProperty("class", "SegBtn")
         self.nav_tune_btn.setProperty("active", "false")
-        self.nav_tune_btn.setMinimumWidth(76)
         self.nav_tune_btn.setCursor(Qt.PointingHandCursor)
         self.nav_tune_btn.clicked.connect(lambda: self._switch_page(1))
 
+        self.nav_motor_btn = QPushButton("⚡ 电机测试")
+        self.nav_motor_btn.setProperty("class", "SegBtn")
+        self.nav_motor_btn.setProperty("active", "false")
+        self.nav_motor_btn.setCursor(Qt.PointingHandCursor)
+        self.nav_motor_btn.clicked.connect(lambda: self._switch_page(2))
+
         nav_lay.addWidget(self.nav_cockpit_btn)
         nav_lay.addWidget(self.nav_tune_btn)
+        nav_lay.addWidget(self.nav_motor_btn)
         lay.addWidget(nav_seg)
 
         # 状态胶囊组
@@ -1429,13 +1535,15 @@ class LuoRovWindow(QMainWindow):
         t_lay.setContentsMargins(3, 3, 3, 3)
         t_lay.setSpacing(2)
 
-        self.btn_blue = QPushButton("蓝色")
+        self.btn_blue = QPushButton("蓝")
         self.btn_blue.setProperty("class", "SegBtn")
+        self.btn_blue.setToolTip("深海蓝主题")
         self.btn_blue.setCursor(Qt.PointingHandCursor)
         self.btn_blue.clicked.connect(lambda: self.apply_theme("blue"))
 
-        self.btn_green = QPushButton("绿色")
+        self.btn_green = QPushButton("绿")
         self.btn_green.setProperty("class", "SegBtn")
+        self.btn_green.setToolTip("翡翠绿主题")
         self.btn_green.setCursor(Qt.PointingHandCursor)
         self.btn_green.clicked.connect(lambda: self.apply_theme("green"))
 
@@ -1445,11 +1553,12 @@ class LuoRovWindow(QMainWindow):
 
         # 串口连接
         self.port_cb = QComboBox()
-        self.port_cb.setMinimumWidth(90)
+        self.port_cb.setMinimumWidth(84)
+        self.port_cb.setMaximumWidth(150)
         self.baud_cb = QComboBox()
         self.baud_cb.addItems(["115200", "57600", "9600"])
         self.baud_cb.setCurrentText("115200")
-        self.baud_cb.setFixedWidth(82)
+        self.baud_cb.setFixedWidth(86)
 
         self.refresh_btn = QPushButton("刷新")
         self.refresh_btn.clicked.connect(self._refresh_ports)
@@ -1487,14 +1596,20 @@ class LuoRovWindow(QMainWindow):
         return bar
 
     def _switch_page(self, idx: int):
+        prev = self.pages.currentIndex()
+        if prev == 2 and idx != 2:
+            self.motor_test_page.on_page_leave()
         self.pages.setCurrentIndex(idx)
         self.nav_cockpit_btn.setProperty("active", "true" if idx == 0 else "false")
         self.nav_tune_btn.setProperty("active", "true" if idx == 1 else "false")
-        for b in (self.nav_cockpit_btn, self.nav_tune_btn):
+        self.nav_motor_btn.setProperty("active", "true" if idx == 2 else "false")
+        for b in (self.nav_cockpit_btn, self.nav_tune_btn, self.nav_motor_btn):
             b.style().unpolish(b)
             b.style().polish(b)
         if idx == 1 and self.ser and self.ser.is_open:
             self._request_all_params()
+        elif idx == 2:
+            self._set_drive_source(False)
 
     def _toggle_max(self):
         if self.isMaximized():
@@ -2103,6 +2218,7 @@ class LuoRovWindow(QMainWindow):
         self.rov_view.set_theme(t)
         self.stick_canvas.set_theme(t)
         self.pid_scope.set_theme(t)
+        self.motor_test_page.apply_theme(t)
         for mc in self.motor_cards:
             mc.apply_theme(t)
         for k, lbl in self.gp_face.items():
@@ -2219,6 +2335,7 @@ class LuoRovWindow(QMainWindow):
         self.connect_btn.style().polish(self.connect_btn)
 
         self.pill_link.set_state(f"{port}", self.theme["ok"])
+        self.motor_test_page.update_telemetry([1500] * 8, self.armed, True)
         self._log(f"已连接 {port} @ {baud}，正在同步 STM32 参数…", "ok")
         QTimer.singleShot(150, self._request_all_params)
 
@@ -2263,6 +2380,9 @@ class LuoRovWindow(QMainWindow):
         self.pill_imu.set_state("IMU --", self.theme["text_muted"])
         self.pill_depth.set_state("深度 --", self.theme["text_muted"])
         self.hud.set_attitude(0.0, 0.0, 0.0, False)
+        self.armed = False
+        self.motor_test_page.on_emergency_or_stop()
+        self.motor_test_page.update_telemetry([1500] * 8, False, False)
         self._log("串口已断开", "warn")
 
     def _send(self, data: bytes):
@@ -2433,6 +2553,7 @@ class LuoRovWindow(QMainWindow):
         self.rov_view.set_motors(motors, self.armed, mode_short)
         for i, us in enumerate(motors):
             self.motor_cards[i].set_feedback_us(us)
+        self.motor_test_page.update_telemetry(motors, self.armed, bool(self.ser and self.ser.is_open))
 
         # 推送到实时调参示波器
         self.pid_scope.push_sample(
@@ -2512,6 +2633,7 @@ class LuoRovWindow(QMainWindow):
         self._send(build_frame(CMD_STOP))
         for mc in self.motor_cards:
             mc.set_slider_silent(0)
+        self.motor_test_page.on_emergency_or_stop()
         self._log("触发紧急停止 (E-STOP)！", "err")
 
     def _zero_depth(self):
@@ -2527,7 +2649,23 @@ class LuoRovWindow(QMainWindow):
             self._send(build_frame(CMD_SET_ALL, struct.pack("<8h", *([0] * 8))))
         for mc in self.motor_cards:
             mc.set_slider_silent(0)
+        self.motor_test_page.on_emergency_or_stop()
         self._log("全部推进器已回中 (1500 µs)", "info")
+
+    def _on_motor_test_cmd(self, idx: int, pct: float):
+        if self.rc_drive_enabled:
+            self._set_drive_source(False)
+        speed = int(round(max(-100.0, min(100.0, pct)) * 10.0))
+        self._send(build_frame(CMD_SET_MOTOR, bytes([idx]) + struct.pack("<h", speed)))
+        if 0 <= idx < len(self.motor_cards):
+            self.motor_cards[idx].set_slider_silent(int(round(pct)))
+
+    def _on_motor_test_all_zero(self):
+        self._set_drive_source(False)
+        self._send(build_frame(CMD_SET_ALL, struct.pack("<8h", *([0] * 8))))
+        for mc in self.motor_cards:
+            mc.set_slider_silent(0)
+        self._log("电机测试: 全部 8 台推进器已停转 (1500 µs)", "info")
 
     def _on_motor_slider(self, idx: int, val: int):
         # 拖动单电机滑块时自动切到直通点动模式，防止被 25Hz 混控帧覆盖
@@ -2558,7 +2696,7 @@ class LuoRovWindow(QMainWindow):
 
         # 叠加键盘 WASD + Q/E + Space/C (未聚焦输入框时生效)
         fw = QApplication.focusWidget()
-        if not isinstance(fw, (QDoubleSpinBox, QSpinBox)):
+        if not isinstance(fw, (QDoubleSpinBox, QSpinBox, QLineEdit)):
             if Qt.Key_W in self.keys_held:
                 vx_f += 1.0
             if Qt.Key_S in self.keys_held:
