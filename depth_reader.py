@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """BPM-TTR / BPM-TTS 深度传感器（RS485 Modbus-RTU）实时深度读取脚本。
 
-传感器接线：红线 VCC(10~32V)、蓝线 GND、黄线 485A、白线 485B。
+传感器接线：红线 VCC(实测必须 >=20V，推荐 24V，范围 20~32V，12V 无法工作！)、蓝线 GND、黄线 485A、白线 485B。
 串口默认：9600, 8, N, 1，从站地址 1，功能码 03H。
 
 寄存器（大端 IEEE-754 float，4 字节 / 2 个寄存器）：
@@ -161,7 +161,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description="BPM-TTR/BPM-TTS RS485 深度传感器实时深度打印",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("-p", "--port", default="COM6", help="串口号")
+    parser.add_argument("-p", "--port", default="COM16", help="串口号")
     parser.add_argument("-b", "--baud", type=int, default=9600, help="波特率")
     parser.add_argument("-s", "--slave", type=int, default=1, help="Modbus 从站地址")
     parser.add_argument("-i", "--interval", type=float, default=0.2, help="打印间隔（秒）")
