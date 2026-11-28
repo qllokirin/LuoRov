@@ -1358,6 +1358,7 @@ class LuoRovWindow(QMainWindow):
         self.theme = THEMES[self.theme_key]
 
         self.ser = None
+        self.port_name = ""
         self.parser = FrameParser()
         self.rx_thread = None
         self.tx_thread = None
@@ -1365,6 +1366,11 @@ class LuoRovWindow(QMainWindow):
         self.running = False
         self.connecting = False
         self.armed = False
+        self.mcu_online = False
+        self.last_rx_frame_ts = 0.0
+        self.port_open_ts = 0.0
+        self._mcu_timeout_warned = False
+        self._params_synced = False
         self.last_motor_send = [0.0] * 8
 
         # 多模式控制状态
@@ -2223,6 +2229,7 @@ class LuoRovWindow(QMainWindow):
             mc.apply_theme(t)
         for k, lbl in self.gp_face.items():
             self._style_face_btn(lbl, self._face_active.get(k, False))
+        self._refresh_mcu_link_ui()
 
     def _style_face_btn(self, lbl: QLabel, active: bool):
         t = self.theme
@@ -2334,10 +2341,16 @@ class LuoRovWindow(QMainWindow):
         self.connect_btn.style().unpolish(self.connect_btn)
         self.connect_btn.style().polish(self.connect_btn)
 
-        self.pill_link.set_state(f"{port}", self.theme["ok"])
-        self.motor_test_page.update_telemetry([1500] * 8, self.armed, True)
-        self._log(f"已连接 {port} @ {baud}，正在同步 STM32 参数…", "ok")
-        QTimer.singleShot(150, self._request_all_params)
+        self.port_name = port
+        self.mcu_online = False
+        self.last_rx_frame_ts = 0.0
+        self.port_open_ts = time.monotonic()
+        self._mcu_timeout_warned = False
+        self._params_synced = False
+        self._refresh_mcu_link_ui()
+        self.motor_test_page.update_telemetry([1500] * 8, False, False)
+        self._log(f"串口 {port} @ {baud} 已打开，正在检测 STM32 主控心跳…", "info")
+        self._send(build_frame(CMD_PING))
 
     def _on_connect_failed(self, port: str, err: str):
         self.connecting = False
@@ -2376,9 +2389,20 @@ class LuoRovWindow(QMainWindow):
         self.connect_btn.style().unpolish(self.connect_btn)
         self.connect_btn.style().polish(self.connect_btn)
 
-        self.pill_link.set_state("未连接", self.theme["text_muted"])
+        self.port_name = ""
+        self.mcu_online = False
+        self.last_rx_frame_ts = 0.0
+        self.port_open_ts = 0.0
+        self._mcu_timeout_warned = False
+        self._params_synced = False
+        self._refresh_mcu_link_ui()
         self.pill_imu.set_state("IMU --", self.theme["text_muted"])
         self.pill_depth.set_state("深度 --", self.theme["text_muted"])
+        self.pill_arm.set_state("未解锁", self.theme["text_secondary"])
+        self.arm_btn.setText("🔓 解锁 (ARM)")
+        self.arm_btn.setProperty("armed", "false")
+        self.arm_btn.style().unpolish(self.arm_btn)
+        self.arm_btn.style().polish(self.arm_btn)
         self.hud.set_attitude(0.0, 0.0, 0.0, False)
         self.armed = False
         self.motor_test_page.on_emergency_or_stop()
@@ -2413,6 +2437,12 @@ class LuoRovWindow(QMainWindow):
             try:
                 ser.write(data)
                 timeout_streak = 0
+                # RS485 半双工防碰撞保护: 发完带长应答的轮询帧后留出从机回传窗口 (TELE_STATUS/PARAMS 约 7~9ms)
+                cmd_type = data[3] if len(data) >= 4 else 0
+                if cmd_type in (CMD_PING, CMD_GET_PARAMS):
+                    time.sleep(0.012)
+                else:
+                    time.sleep(0.003)
             except serial.SerialTimeoutException:
                 timeout_streak += 1
                 if timeout_streak >= 6 and self.running:
@@ -2463,6 +2493,7 @@ class LuoRovWindow(QMainWindow):
             self._log(f"串口异常断开: {reason}", "err")
 
     def _on_ack(self, cmd: int, result: int):
+        self._mark_mcu_alive()
         cmd_names = {
             CMD_ARM: "解锁/上锁",
             CMD_STOP: "紧急停止",
@@ -2480,14 +2511,79 @@ class LuoRovWindow(QMainWindow):
         else:
             self._log(f"{cname} -> 被拒绝 (请确认解锁/上锁状态要求)", "warn")
 
+    def _refresh_mcu_link_ui(self):
+        th = self.theme
+        if not (self.running and self.ser and self.ser.is_open):
+            self.pill_link.set_state("未连接", th["text_muted"])
+            self.pill_link.setToolTip("串口未打开")
+            return
+        if self.mcu_online:
+            self.pill_link.set_state(f"{self.port_name} · 主控在线", th["ok"])
+            self.pill_link.setToolTip(f"串口 {self.port_name} 已连接，且持续收到 STM32 主控有效心跳帧")
+            return
+        now = time.monotonic()
+        if self.last_rx_frame_ts == 0.0 and (now - self.port_open_ts) < 1.5:
+            self.pill_link.set_state(f"{self.port_name} · 等待主控", th["warn"])
+            self.pill_link.setToolTip(f"串口 {self.port_name} 已打开，正在等待 STM32 主控心跳应答…")
+        else:
+            self.pill_link.set_state(f"{self.port_name} · 主控无响应", th["danger"])
+            self.pill_link.setToolTip(
+                f"串口 {self.port_name} 已打开，但未收到 STM32 应答。\n"
+                "请检查：主控供电 / 115200 波特率 / RS485 A-B 线序 / PA8 DE 方向脚。"
+            )
+
+    def _mark_mcu_alive(self):
+        self.last_rx_frame_ts = time.monotonic()
+        self._mcu_timeout_warned = False
+        if not self.mcu_online:
+            self.mcu_online = True
+            self._refresh_mcu_link_ui()
+            self._log(f"STM32 主控已连接在线 ({self.port_name})", "ok")
+            if not self._params_synced:
+                self._params_synced = True
+                QTimer.singleShot(80, self._request_all_params)
+
+    def _check_mcu_link(self):
+        if not (self.running and self.ser and self.ser.is_open):
+            return
+        now = time.monotonic()
+        if self.mcu_online:
+            if (now - self.last_rx_frame_ts) >= 1.2:
+                self.mcu_online = False
+                self._mcu_timeout_warned = True
+                self._params_synced = False
+                th = self.theme
+                self.armed = False
+                self.pill_imu.set_state("IMU --", th["text_muted"])
+                self.pill_depth.set_state("深度 --", th["text_muted"])
+                self.pill_arm.set_state("主控离线", th["danger"])
+                self.arm_btn.setText("🔓 解锁 (ARM)")
+                self.arm_btn.setProperty("armed", "false")
+                self.arm_btn.style().unpolish(self.arm_btn)
+                self.arm_btn.style().polish(self.arm_btn)
+                self.hud.set_attitude(0.0, 0.0, 0.0, False)
+                self.motor_test_page.on_emergency_or_stop()
+                self.motor_test_page.update_telemetry([1500] * 8, False, False)
+                self._refresh_mcu_link_ui()
+                self._log(f"STM32 主控通信超时离线 ({self.port_name})，请检查供电与通信线路", "err")
+        elif self.last_rx_frame_ts == 0.0 and (now - self.port_open_ts) >= 1.5 and not self._mcu_timeout_warned:
+            self._mcu_timeout_warned = True
+            self._refresh_mcu_link_ui()
+            self._log(
+                f"串口 {self.port_name} 已打开，但未检测到 STM32 主控应答 (请检查供电、115200 波特率或 485 A/B 线序)",
+                "warn",
+            )
+
     def _send_ping(self):
         if self.ser and self.ser.is_open:
+            self._check_mcu_link()
             self._send(build_frame(CMD_PING))
 
     # =========================================================================
     # 遥测刷新与示波器推流
     # =========================================================================
     def _update_status(self, t_data):
+        self._mark_mcu_alive()
         (
             uptime, depth_mm, press_pa, temp_c100,
             roll, pitch, yaw, gx, gy, gz, ax, ay, az,
@@ -2553,7 +2649,7 @@ class LuoRovWindow(QMainWindow):
         self.rov_view.set_motors(motors, self.armed, mode_short)
         for i, us in enumerate(motors):
             self.motor_cards[i].set_feedback_us(us)
-        self.motor_test_page.update_telemetry(motors, self.armed, bool(self.ser and self.ser.is_open))
+        self.motor_test_page.update_telemetry(motors, self.armed, self.mcu_online)
 
         # 推送到实时调参示波器
         self.pid_scope.push_sample(
@@ -2836,6 +2932,7 @@ class LuoRovWindow(QMainWindow):
         QTimer.singleShot(60, lambda: self._send(build_frame(CMD_GET_PARAMS, bytes([1]))))
 
     def _on_params_pack(self, part: int, data: bytes):
+        self._mark_mcu_alive()
         if part == 0 and len(data) >= 80:
             for i in range(4):
                 vals = struct.unpack("<5f", data[i * 20 : (i + 1) * 20])

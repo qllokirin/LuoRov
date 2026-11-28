@@ -62,10 +62,10 @@ static void ring_flush(ring_t *r)
 
 /* ---------------------------- USART 初始化 ---------------------------- */
 
-static void usart_init(USART_TypeDef *u, uint32_t baud)
+static void usart_init(USART_TypeDef *u, uint32_t pclk_hz, uint32_t baud)
 {
-    /* BRR = 外设时钟 / 波特率 (72MHz 整分频) */
-    u->BRR = (uint16_t)(SYS_CLK_HZ / baud);
+    /* BRR = 外设总线时钟 / 波特率 (四舍五入；USART1 在 APB2=72MHz，USART2 在 APB1=36MHz) */
+    u->BRR = (uint16_t)((pclk_hz + (baud / 2UL)) / baud);
     /* CR1: UE | TE | RE | RXNEIE */
     u->CR1 = (1UL << 13) | (1UL << 3) | (1UL << 2) | (1UL << 5);
 }
@@ -80,17 +80,19 @@ static void rs485_gpio_init(void)
                  |  (1UL << 14); /* USART1 */
     RCC->APB1ENR |= (1UL << 17); /* USART2 */
 
-    /* 岸站: PA9=TX(AF PP), PA10=RX(浮空输入); RS485 模式额外配置 PA8=DE */
+    /* 岸站: PA9=TX(AF PP), PA10=RX(上拉输入, 防止 485 发送态 RO 高阻悬空产生乱码); RS485 模式配置 PA8=DE */
     gpio_cfg(SHORE_TX_GPIO, SHORE_TX_PIN, GPIO_CFG_AF_PP, GPIO_CFG_SPEED_50M);
-    gpio_cfg(SHORE_RX_GPIO, SHORE_RX_PIN, GPIO_CFG_IN_FLOAT, GPIO_CFG_MODE_IN);
+    gpio_cfg(SHORE_RX_GPIO, SHORE_RX_PIN, GPIO_CFG_IN_PUPD, GPIO_CFG_MODE_IN);
+    gpio_set(SHORE_RX_GPIO, SHORE_RX_PIN);   /* 使能内部上拉 -> 空闲高电平 */
 #if SHORE_USE_RS485
     gpio_cfg(SHORE_DE_GPIO, SHORE_DE_PIN, GPIO_CFG_OUT_PP, GPIO_CFG_SPEED_50M);
     gpio_clr(SHORE_DE_GPIO, SHORE_DE_PIN);   /* 默认接收 */
 #endif
 
-    /* 深度计: PA2=TX, PA3=RX, PA1=DE */
+    /* 深度计: PA2=TX, PA3=RX(上拉输入), PA1=DE */
     gpio_cfg(DEPTH_TX_GPIO, DEPTH_TX_PIN, GPIO_CFG_AF_PP, GPIO_CFG_SPEED_50M);
-    gpio_cfg(DEPTH_RX_GPIO, DEPTH_RX_PIN, GPIO_CFG_IN_FLOAT, GPIO_CFG_MODE_IN);
+    gpio_cfg(DEPTH_RX_GPIO, DEPTH_RX_PIN, GPIO_CFG_IN_PUPD, GPIO_CFG_MODE_IN);
+    gpio_set(DEPTH_RX_GPIO, DEPTH_RX_PIN);   /* 使能内部上拉 -> 空闲高电平 */
     gpio_cfg(DEPTH_DE_GPIO, DEPTH_DE_PIN, GPIO_CFG_OUT_PP, GPIO_CFG_SPEED_50M);
     gpio_clr(DEPTH_DE_GPIO, DEPTH_DE_PIN);   /* 默认接收 */
 }
@@ -101,8 +103,8 @@ void rs485_init(void)
     ring_init(&s_depth_rx, DEPTH_RX_BUF_SIZE);
 
     rs485_gpio_init();
-    usart_init(SHORE_UART, SHORE_BAUDRATE);
-    usart_init(DEPTH_UART, DEPTH_BAUDRATE);
+    usart_init(SHORE_UART, APB2_CLK_HZ, SHORE_BAUDRATE);
+    usart_init(DEPTH_UART, APB1_CLK_HZ, DEPTH_BAUDRATE);
 
     /* 使能接收中断 */
     NVIC_SetPriority(USART1_IRQn, 1);
@@ -119,6 +121,7 @@ static void usart_send(USART_TypeDef *u, GPIO_TypeDef *de_port, uint32_t de_pin,
     uint16_t i;
     if (de_port != (GPIO_TypeDef *)0) {
         gpio_set(de_port, de_pin);                   /* 进入发送方向 */
+        for (i = 0; i < 64; i++) { __NOP(); }        /* 等待 485 收发器使能稳定 (~1us) */
     }
     for (i = 0; i < len; i++) {
         while (!(u->SR & USART_SR_TXE)) { }          /* 等待发送数据寄存器空 */
@@ -133,6 +136,9 @@ static void usart_send(USART_TypeDef *u, GPIO_TypeDef *de_port, uint32_t de_pin,
 void rs485_shore_send(const uint8_t *buf, uint16_t len)
 {
 #if SHORE_USE_RS485
+    /* 半双工换向保护: 等待岸端 USB-485 自动方向切换释放总线 (~0.5ms) 避免碰撞 */
+    volatile uint32_t d;
+    for (d = 0; d < 6000UL; d++) { __NOP(); }
     usart_send(SHORE_UART, SHORE_DE_GPIO, SHORE_DE_PIN, buf, len);
 #else
     usart_send(SHORE_UART, (GPIO_TypeDef *)0, 0, buf, len);

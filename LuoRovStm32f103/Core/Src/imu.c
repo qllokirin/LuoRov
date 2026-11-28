@@ -32,9 +32,11 @@
 #define COMP_ALPHA           0.985f      /* 200Hz 下互补滤波陀螺权重 */
 
 static uint8_t    s_imu_ok = 0;
+static uint8_t    s_imu_detected = 0;
 static uint8_t    s_calibrated = 0;
 static uint8_t    s_inited_angles = 0;
 static uint32_t   s_last_ms = 0;
+static uint32_t   s_last_probe_ms = 0;
 
 /* 零偏与安装水平偏置 */
 static float      s_gx_bias = 0.0f;
@@ -55,6 +57,7 @@ static inline void i2c_scl_h(void) { gpio_set(IMU_SCL_GPIO, IMU_SCL_PIN); }
 static inline void i2c_scl_l(void) { gpio_clr(IMU_SCL_GPIO, IMU_SCL_PIN); }
 static inline void i2c_sda_h(void) { gpio_set(IMU_SDA_GPIO, IMU_SDA_PIN); }
 static inline void i2c_sda_l(void) { gpio_clr(IMU_SDA_GPIO, IMU_SDA_PIN); }
+static inline uint8_t i2c_scl_r(void) { return gpio_read(IMU_SCL_GPIO, IMU_SCL_PIN); }
 static inline uint8_t i2c_sda_r(void) { return gpio_read(IMU_SDA_GPIO, IMU_SDA_PIN); }
 
 static void i2c_delay(void)
@@ -62,6 +65,15 @@ static void i2c_delay(void)
     /* 72MHz 下约 1.5~2.5us，I2C 速率约 180~220kHz */
     volatile uint32_t i;
     for (i = 0; i < 10; i++) { __NOP(); }
+}
+
+/* 检查开漏总线空闲电平：未接带外部上拉的 IMU 模块时 SCL/SDA 无法拉高，防止误判假 ACK(0) */
+static uint8_t i2c_bus_idle_ok(void)
+{
+    i2c_sda_h();
+    i2c_scl_h();
+    i2c_delay();
+    return (i2c_scl_r() && i2c_sda_r()) ? 1U : 0U;
 }
 
 static void i2c_start(void)
@@ -117,6 +129,7 @@ static uint8_t i2c_read_byte(uint8_t ack)
 
 static uint8_t mpu_write_reg(uint8_t reg, uint8_t val)
 {
+    if (!i2c_bus_idle_ok()) return 1;
     i2c_start();
     if (i2c_write_byte(MPU6050_ADDR_W)) { i2c_stop(); return 1; }
     if (i2c_write_byte(reg))            { i2c_stop(); return 1; }
@@ -128,6 +141,7 @@ static uint8_t mpu_write_reg(uint8_t reg, uint8_t val)
 static uint8_t mpu_read_regs(uint8_t reg, uint8_t *dst, uint8_t n)
 {
     uint8_t i;
+    if (!i2c_bus_idle_ok()) return 1;
     i2c_start();
     if (i2c_write_byte(MPU6050_ADDR_W)) { i2c_stop(); return 1; }
     if (i2c_write_byte(reg))            { i2c_stop(); return 1; }
@@ -140,11 +154,28 @@ static uint8_t mpu_read_regs(uint8_t reg, uint8_t *dst, uint8_t n)
     return 0;
 }
 
+static uint8_t mpu_who_am_i_ok(void)
+{
+    uint8_t who = 0;
+    if (mpu_read_regs(MPU_REG_WHO_AM_I, &who, 1) != 0U) {
+        return 0U;
+    }
+    return (who == 0x68U || who == 0x70U || who == 0x71U || who == 0x98U) ? 1U : 0U;
+}
+
 /* 一次突发读取 14 字节: Accel(6) + Temp(2) + Gyro(6) */
 static int32_t mpu_read_burst(imu_raw_t *r)
 {
     uint8_t buf[14];
+    uint8_t i, all_zero = 1U, all_ff = 1U;
     if (mpu_read_regs(MPU_REG_ACCEL_XOUT_H, buf, 14)) {
+        return -1;
+    }
+    for (i = 0; i < 14U; i++) {
+        if (buf[i] != 0x00U) all_zero = 0U;
+        if (buf[i] != 0xFFU) all_ff = 0U;
+    }
+    if (all_zero || all_ff) {
         return -1;
     }
     r->ax = (int16_t)(((uint16_t)buf[0]  << 8) | buf[1]);
@@ -220,8 +251,6 @@ static int32_t imu_do_calibrate(uint8_t set_level)
 
 int32_t imu_init(void)
 {
-    uint8_t who = 0;
-
     RCC->APB2ENR |= (1UL << 3);  /* 确保 GPIOB 时钟已开 */
     gpio_cfg(IMU_SCL_GPIO, IMU_SCL_PIN, GPIO_CFG_OUT_OD, GPIO_CFG_SPEED_50M);
     gpio_cfg(IMU_SDA_GPIO, IMU_SDA_PIN, GPIO_CFG_OUT_OD, GPIO_CFG_SPEED_50M);
@@ -230,29 +259,34 @@ int32_t imu_init(void)
 
     memset(&s_latest, 0, sizeof(s_latest));
     s_imu_ok = 0;
+    s_imu_detected = 0;
     s_calibrated = 0;
     s_inited_angles = 0;
+    s_last_probe_ms = millis();
+
+    /* 先确认总线处于有效上拉空闲态并读出正确 WHO_AM_I，避免未接模块时误判在线 */
+    if (!mpu_who_am_i_ok()) {
+        return -1;
+    }
 
     /* 复位并唤醒 */
-    mpu_write_reg(MPU_REG_PWR_MGMT_1, 0x80);
+    if (mpu_write_reg(MPU_REG_PWR_MGMT_1, 0x80) != 0U) return -1;
     delay_ms(100);
-    mpu_write_reg(MPU_REG_PWR_MGMT_1, 0x01);    /* PLL with X axis gyro ref (更稳定) */
+    if (mpu_write_reg(MPU_REG_PWR_MGMT_1, 0x01) != 0U) return -1;    /* PLL with X axis gyro ref */
     delay_ms(20);
 
     /* 采样率 1kHz, DLPF=3 (44Hz 加速度 / 42Hz 陀螺，滤除电机高频谐振) */
-    mpu_write_reg(MPU_REG_SMPLRT_DIV, 0x00);
-    mpu_write_reg(MPU_REG_CONFIG, 0x03);
-    /* 量程: 陀螺 ±500dps (65.5 LSB/dps) 或 ±250dps (131 LSB/dps)；保持 ±250dps 高精度 */
-    mpu_write_reg(MPU_REG_GYRO_CONFIG, 0x00);
-    mpu_write_reg(MPU_REG_ACCEL_CONFIG, 0x00);
+    if (mpu_write_reg(MPU_REG_SMPLRT_DIV, 0x00) != 0U) return -1;
+    if (mpu_write_reg(MPU_REG_CONFIG, 0x03) != 0U)     return -1;
+    /* 量程: 陀螺 ±250dps (131 LSB/dps), 加速度 ±2g (16384 LSB/g) */
+    if (mpu_write_reg(MPU_REG_GYRO_CONFIG, 0x00) != 0U)  return -1;
+    if (mpu_write_reg(MPU_REG_ACCEL_CONFIG, 0x00) != 0U) return -1;
 
-    if (mpu_read_regs(MPU_REG_WHO_AM_I, &who, 1)) {
-        return -1;
-    }
-    if (who != 0x68U && who != 0x70U && who != 0x71U && who != 0x98U) {
+    if (!mpu_who_am_i_ok()) {
         return -1;
     }
 
+    s_imu_detected = 1;
     s_imu_ok = 1;
     /* 上电静止自动校准陀螺零偏 (不覆盖自然重力水平角) */
     (void)imu_do_calibrate(0);
@@ -274,8 +308,25 @@ int32_t imu_read(imu_data_t *out)
     float roll_acc, pitch_acc, acc_norm, dt;
     uint32_t now;
 
+    if (!s_imu_detected) {
+        /* 未检测到 IMU 时每秒轻探测一次 WHO_AM_I，支持上电后热插拔恢复 */
+        now = millis();
+        if ((now - s_last_probe_ms) >= 1000UL) {
+            s_last_probe_ms = now;
+            if (mpu_who_am_i_ok()) {
+                (void)imu_init();
+            }
+        }
+        if (!s_imu_detected) {
+            s_imu_ok = 0;
+            return -1;
+        }
+    }
+
     if (mpu_read_burst(&r) != 0) {
         s_imu_ok = 0;
+        s_imu_detected = 0;
+        s_last_probe_ms = millis();
         return -1;
     }
     s_imu_ok = 1;

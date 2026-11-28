@@ -705,7 +705,7 @@ class MotorTestPage(QWidget):
         self._cmd_pct = round(max(-100.0, min(100.0, pct)), 1)
         self._refresh_readouts()
         if not self._connected and abs(self._cmd_pct) > 1e-6:
-            self.logMessage.emit("电机测试: 串口未连接，无法下发推力指令", "warn")
+            self.logMessage.emit("电机测试: 串口未连接或 STM32 主控无响应，无法下发推力指令", "warn")
             return
         if not self._armed and abs(self._cmd_pct) > 1e-6:
             self.logMessage.emit("电机测试: 当前未解锁 (SAFE)，请先点击「🔓 解锁 (ARM)」后再输出推力", "warn")

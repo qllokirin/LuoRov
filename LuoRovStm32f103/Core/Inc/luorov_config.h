@@ -29,6 +29,8 @@ extern "C" {
 
 /* ============================ 系统时钟 ============================ */
 #define SYS_CLK_HZ           72000000UL   /* 72 MHz, HSE 8MHz * PLL9 */
+#define APB2_CLK_HZ          72000000UL   /* APB2 = HCLK/1 = 72 MHz (USART1) */
+#define APB1_CLK_HZ          36000000UL   /* APB1 = HCLK/2 = 36 MHz (USART2, TIM3/TIM4 2x=72MHz) */
 
 /* ============================ 8 路电调 PWM ============================ */
 /* 电调输入为 50Hz 标准舵机 PWM：周期 20ms，中位 1500us，1000~2000us。 */
@@ -62,8 +64,8 @@ extern "C" {
 #define ESC8_PIN             (1UL<<9)     /* PB9  TIM4_CH4 */
 
 /* ============================ 岸站通信 (USART1) ============================ */
-/* 0 = TTL 串口直连 (无需 485 收发器与 DE 方向脚); 1 = RS485 半双工 (PA8 控制 DE/RE) */
-#define SHORE_USE_RS485      0
+/* 0 = TTL 串口直连 (无需 485 收发器与 DE 方向脚); 1 = RS485 半双工 (PA8 控制 DE/RE，当前默认) */
+#define SHORE_USE_RS485      1
 #define SHORE_UART           USART1
 #define SHORE_BAUDRATE       115200UL
 #define SHORE_DE_GPIO        GPIOA
@@ -97,23 +99,22 @@ extern "C" {
 #define LED_PIN              (1UL<<13)    /* PC13 蓝派 LED(低电平点亮) */
 
 /* ============================ 深度计 Modbus 参数 ============================ */
-#define DEPTH_SLAVE_ADDR       1            /* 从机地址，按实物改 */
+/* 对齐实测验证通过的 BPM-TTR/BPM-TTS (depth_reader.py):
+ *   从机 1, 9600 8N1, FC03 一次读取 0x0000..0x000A 共 11 寄存器 (27 字节应答):
+ *   0x0000 主变量(大端float, 默认kPa) / 0x0006 温度(大端float, ℃) / 0x000A 单位码(u16, 12=kPa)
+ */
+#define DEPTH_SLAVE_ADDR       1            /* 从机地址 */
 #define DEPTH_FUNC_READ        0x03         /* 读保持寄存器 */
 #define DEPTH_REG_START        0x0000       /* 起始寄存器 */
-#define DEPTH_REG_COUNT        2            /* 读 2 个寄存器 => 32 位大端 */
-#define DEPTH_POLL_MS          100          /* 轮询周期 10Hz */
-#define DEPTH_RESP_TIMEOUT_MS  50           /* 应答超时 */
+#define DEPTH_REG_COUNT        11           /* 读 11 个寄存器 (压力+百分比+电流+温度+电桥+单位码) */
+#define DEPTH_POLL_MS          120          /* 轮询周期 (~8.3Hz, 兼顾 27B@9600bps 传输时间) */
+#define DEPTH_RESP_TIMEOUT_MS  100          /* 应答超时 (发完请求后计时) */
 
-/* 压力原始值(int32)到 Pa 的换算系数，按传感器实际量纲校准：
- *   返回 Pa       -> 1.0f
- *   返回 0.1kPa   -> 100.0f
- *   返回 kPa      -> 1000.0f
- *   返回 0.1bar   -> 10000.0f
- */
-#define DEPTH_PRESS_SCALE      1.0f
-#define DEPTH_REF_PA_DEFAULT   101325      /* 未置零时按标准大气压估算 */
-#define WATER_DENSITY_KG_M3    1000.0f     /* 淡水 */
-#define GRAVITY_M_S2           9.81f
+/* 未知单位码时的默认压力换算系数 (主变量 -> Pa): 默认 kPa -> 1000.0f */
+#define DEPTH_PRESS_SCALE      1000.0f
+#define DEPTH_REF_PA_DEFAULT   0            /* 表压型传感器空气中读数为 0 kPa */
+#define WATER_DENSITY_KG_M3    998.0f       /* 淡水密度 (与 depth_reader.py 一致) */
+#define GRAVITY_M_S2           9.80665f     /* 标准重力加速度 */
 
 /* ============================ 控制与安全 ============================ */
 #define CTRL_LOOP_MS           5           /* 200Hz 姿态解算与控制混控周期 */
